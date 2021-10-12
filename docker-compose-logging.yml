@@ -1,0 +1,179 @@
+version: '3.9'
+services:
+  elasticsearch:
+    image: elasticsearch:8.0.0
+    ports:
+      - "9200:9200"
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: false
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+
+  kibana:
+    image: kibana:8.0.0
+    ports:
+      - "5601:5601"
+    restart: on-failure
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    depends_on:
+      - elasticsearch
+
+  filebeat:
+    image: elastic/filebeat:8.0.0
+    volumes:
+      - ./filebeat.docker.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    user: root
+    restart: on-failure
+
+  db:
+    image: postgres:14.0
+    environment:
+      POSTGRES_USER: beer_service
+      POSTGRES_PASSWORD: beer
+      POSTGRES_DB: beerservice
+    ports:
+      - "5432:5432"
+
+  jms:
+    build:
+      context: ""
+      dockerfile: Dockerfile
+    ports:
+      - "8161:8161"
+      - "61616:61616"
+
+  zipkin:
+    image: openzipkin/zipkin
+    ports:
+      - "9411:9411"
+
+  eureka:
+    image: hffbeer/mssc-brewery-eureka
+    ports:
+      - "8761:8761"
+
+  config:
+    image: hffbeer/mssc-config-server
+    environment:
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://netflix:eureka@eureka:8761/eureka/
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: 'true'
+    ports:
+      - "8888:8888"
+    depends_on:
+      - eureka
+
+  inventory-service:
+    restart: on-failure
+    image: hffbeer/mscc-beer-inventory-service
+    ports:
+      - "8082:8082"
+    environment:
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://netflix:eureka@eureka:8761/eureka/
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: 'true'
+      SPRING_PROFILES_ACTIVE: local-discovery,local
+      SPRING_ZIPKIN_BASEURL: http://zipkin:9411
+      SPRING_ARTEMIS_HOST: jms
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/beerservice?currentSchema=beerinventoryservice
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config:8888
+    depends_on:
+      - eureka
+      - config
+      - jms
+      - db
+    labels:
+      collect_logs_with_filebeat: "true"
+      decode_log_event_to_json_object: "true"
+  inventory-failover:
+    image: hffbeer/mssc-inventory-failover
+    ports:
+      - "8083:8083"
+    depends_on:
+      - eureka
+      - config
+    environment:
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://netflix:eureka@eureka:8761/eureka/
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: 'true'
+      SPRING_ZIPKIN_BASEURL: http://zipkin:9411
+    labels:
+      collect_logs_with_filebeat: "true"
+      decode_log_event_to_json_object: "true"
+
+  beer-service:
+    restart: on-failure
+    image: hffbeer/mssc-beer-service
+    ports:
+      - "8080:8080"
+    depends_on:
+      - eureka
+      - config
+      - jms
+      - inventory-service
+    environment:
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://netflix:eureka@eureka:8761/eureka/
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: 'true'
+      SPRING_PROFILES_ACTIVE: local-discovery,local
+      SPRING_ZIPKIN_BASEURL: http://zipkin:9411
+      SPRING_ARTEMIS_HOST: jms
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/beerservice?currentSchema=beerservice
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config:8888
+    labels:
+      collect_logs_with_filebeat: "true"
+      decode_log_event_to_json_object: "true"
+
+  order-service:
+    restart: on-failure
+    image: hffbeer/mssc-beer-order-service
+    ports:
+      - "8081:8081"
+    depends_on:
+      - eureka
+      - config
+      - jms
+      - beer-service
+    environment:
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://netflix:eureka@eureka:8761/eureka/
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: 'true'
+      SPRING_PROFILES_ACTIVE: local-discovery,local
+      SPRING_ZIPKIN_BASEURL: http://zipkin:9411
+      SPRING_ARTEMIS_HOST: jms
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/beerservice?currentSchema=beerorderservice
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config:8888
+      SFG_BREWERY_BEER-SERVICE-HOST: http://beer-service:8080
+    labels:
+      collect_logs_with_filebeat: "true"
+      decode_log_event_to_json_object: "true"
+
+  gateway:
+    image: hffbeer/mssc-brewery-gateway
+    ports:
+      - "9090:9090"
+    depends_on:
+      - eureka
+      - config
+      - inventory-service
+      - beer-service
+      - order-service
+      - inventory-failover
+    environment:
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://netflix:eureka@eureka:8761/eureka/
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: 'true'
+      SPRING_PROFILES_ACTIVE: local-discovery
+      SPRING_ZIPKIN_BASEURL: http://zipkin:9411
+    labels:
+      collect_logs_with_filebeat: "true"
+      decode_log_event_to_json_object: "true"
+
+volumes:
+  elasticsearch_data:
+
+
+
+
+
+
+
+
